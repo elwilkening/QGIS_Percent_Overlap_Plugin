@@ -100,14 +100,13 @@ class PercentageOverlapDialog(QDialog):
         self.updateFieldLists()
 
     def updateFieldLists(self):
-        previous_input_year = self.inputYearField.currentText()
         self.overlayYearField.clear()
 
         input_layer = self.getCurrentInputLayer()
         selected_overlays = self.getSelectedOverlayLayers()
         if selected_overlays:
             common_fields = self.getCommonFieldNames(selected_overlays)
-            self.overlayYearField.addItems([""] + common_fields
+            self.overlayYearField.addItems([""] + common_fields)
         self.updateOutputUnits(input_layer)
         self.updateAreaHeaders(input_layer)
         self.updateCalculateButtonState()
@@ -325,7 +324,6 @@ class PercentageOverlapDialog(QDialog):
     def onCalculate(self):
         input_layer = self.getCurrentInputLayer()
         overlay_layers = self.getSelectedOverlayLayers()
-        year_field_input = self.inputYearField.currentText().strip()
         year_field_overlay = self.overlayYearField.currentText().strip()
 
         if input_layer is None:
@@ -334,27 +332,13 @@ class PercentageOverlapDialog(QDialog):
         if not overlay_layers:
             QMessageBox.warning(self, "Overlay layers required", "Please select one or more overlay layers.")
             return
-        if year_field_input and year_field_overlay == "":
-            year_field_overlay = year_field_input
 
         self.updateAreaHeaders(input_layer)
-        self.resultoverlay = self.overlayYearField.currentText().strip()
+        self.results = self.calculateOverlap(input_layer, overlay_layers, year_field_overlay)
+        self.populateResultsTable()
+        self.saveCsvButton.setEnabled(bool(self.results))
 
-        if input_layer is None:
-            QMessageBox.warning(self, "Input layer required", "Please select an input layer.")
-            return
-        if not overlay_layers:
-            QMessageBox.warning(self, "Overlay layers required", "Please select one or more overlay layers.")
-            return
-
-        self.updateAreaHeaders(input_layer)
-        self.results = self.calculateOverlap(input_layer, overlay_layers
-            if year_field_overlay:
-                overlay_values = self.getUniqueFieldValues(overlay_layer, year_field_overlay)
-
-            years = self.intersectYears(input_values, overlay_values)
-            if not years:
-                years = [None]overlay):
+    def calculateOverlap(self, input_layer, overlay_layers, year_field_overlay):
         results = []
 
         for overlay_layer in overlay_layers:
@@ -368,14 +352,21 @@ class PercentageOverlapDialog(QDialog):
             for year in years:
                 overlap_area, total_area = self.calculateOverlapForYear(
                     input_layer,
-                    overlay_layer
-    def intersectYears(self, input_values, overlay_values):
-        if input_values is None:
-            return [None]
-        if overlay_values is None:
-            return input_values
-        years = sorted(set(input_values).intersection(set(overlay_values)), key=lambda x: str(x))
-        return years
+                    overlay_layer,
+                    year_field_overlay if year_field_overlay else None,
+                    year,
+                )
+                percent = 0.0
+                if total_area > 0:
+                    percent = overlap_area / total_area * 100.0
+                results.append({
+                    "overlay_layer": overlay_layer.name(),
+                    "year": year if year is not None else "all",
+                    "input_area": total_area,
+                    "overlap_area": overlap_area,
+                    "percent": percent,
+                })
+        return results
 
     def getUniqueFieldValues(self, layer, field_name):
         if not field_name or field_name not in layer.fields().names():
@@ -385,13 +376,16 @@ class PercentageOverlapDialog(QDialog):
             values.add(feature[field_name])
         return sorted(values, key=lambda x: str(x))
 
-    def calculateOverlapForYear(self, input_layer, overlay_layer, input_year_field, overlay_year_field, year_value):
+    def calculateOverlapForYear(self, input_layer, overlay_layer, overlay_year_field, year_value):
         request_input = QgsFeatureRequest()
         request_overlay = QgsFeatureRequest()
 
-        if input_year_field and year_value is not None:
-            expr = self.buildFieldExpression(input_layer, input_year_field, year_value)
-area = 0.0
+        if overlay_year_field and year_value is not None:
+            expr = self.buildFieldExpression(overlay_layer, overlay_year_field, year_value)
+            request_overlay.setFilterExpression(expr)
+
+        input_geometries = []
+        total_input_area = 0.0
         for feature in input_layer.getFeatures(request_input):
             geom = feature.geometry()
             if geom is None or geom.isEmpty():
@@ -407,10 +401,13 @@ area = 0.0
             overlay_geometries.append(geom)
 
         overlap_area = 0.0
-        if total_input_area > 0 and overlay_geometries:overlay_year_field, year_value):
-        request_input = QgsFeatureRequest()
-        request_overlay = QgsFeatureRequest()
-rsection.isEmpty():
+        if total_input_area > 0 and overlay_geometries:
+            for input_geom in input_geometries:
+                for overlay_geom in overlay_geometries:
+                    if not input_geom.intersects(overlay_geom):
+                        continue
+                    intersection = input_geom.intersection(overlay_geom)
+                    if intersection is None or intersection.isEmpty():
                         continue
                     overlap_area += intersection.area()
 
