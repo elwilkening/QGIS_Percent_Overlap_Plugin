@@ -362,9 +362,68 @@ class PercentageOverlapDialog(QDialog):
 
         self.updateAreaHeaders(input_layer)
         mode = self.outputModeCombo.currentText()
-        self.results = self.calculateOverlap(input_layer, overlay_layers, begin_year_field, end_year_field, mode)
+        try:
+            self.results = self.calculateOverlap(input_layer, overlay_layers, begin_year_field, end_year_field, mode)
+        except Exception as exc:
+            QMessageBox.warning(self, "Calculation failed", f"An error occurred during calculation:\n{exc}")
+            return
+
+        # If both year fields blank but results contain per-year numeric rows,
+        # surface diagnostics and replace with a single combined 'all' row.
+        if begin_year_field == "" and end_year_field == "":
+            has_year_rows = any(isinstance(r.get('begin_year'), int) for r in (self.results or []))
+            if has_year_rows:
+                # Build diagnostic summary
+                base_count = sum(1 for _ in input_layer.getFeatures())
+                overlay_count = sum(sum(1 for _ in ol.getFeatures()) for ol in overlay_layers)
+                try:
+                    base_geoms = [f.geometry() for f in input_layer.getFeatures() if f.geometry() is not None and not f.geometry().isEmpty()]
+                    base_union = QgsGeometry.unaryUnion(base_geoms) if base_geoms else None
+                    base_area = 0.0 if base_union is None or base_union.isEmpty() else base_union.area()
+                except Exception:
+                    base_area = 0.0
+                details = (
+                    f"Detected unexpected per-year rows while year fields were blank.\n"
+                    f"Input features: {base_count}\n"
+                    f"Overlay features (total across selected layers): {overlay_count}\n"
+                    f"Base union area (map units²): {base_area:.4f}\n"
+                    f"Forcing a single combined result row (Begin/End = all)."
+                )
+                QMessageBox.information(self, "Calculation details", details)
+                # Force a single combined result
+                overlay_geoms = []
+                for overlay in overlay_layers:
+                    for feat in overlay.getFeatures():
+                        geom = feat.geometry()
+                        if geom is None or geom.isEmpty():
+                            continue
+                        overlay_geoms.append(geom)
+                if overlay_geoms:
+                    overlay_union = QgsGeometry.unaryUnion(overlay_geoms)
+                    inter = base_union.intersection(overlay_union) if base_union is not None else None
+                    overlap_area = 0.0 if inter is None or inter.isEmpty() else inter.area()
+                else:
+                    overlap_area = 0.0
+                percent = (overlap_area / base_area * 100.0) if base_area > 0 else 0.0
+                self.results = [{
+                    "overlay_layer": "combined",
+                    "begin_year": "all",
+                    "end_year": "all",
+                    "input_area": base_area,
+                    "overlap_area": overlap_area,
+                    "percent": percent,
+                }]
+
+        if not self.results:
+            QMessageBox.information(self, "No results", "Calculation completed but produced no results. Check selected layers, fields, and CRS.")
+            self.results = []
+            self.resultsTable.clearContents()
+            self.resultsTable.setRowCount(0)
+            self.saveCsvButton.setEnabled(False)
+            return
+
         self.populateResultsTable()
-        self.saveCsvButton.setEnabled(bool(self.results))
+        self.saveCsvButton.setEnabled(True)
 
     def calculateOverlap(self, input_layer, overlay_layers, begin_year_field, end_year_field, mode="Combined"):
         # Aggregate overlap per-calendar-year across all selected overlay layers.
