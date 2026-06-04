@@ -43,13 +43,6 @@ class PercentageOverlapDialog(QDialog):
         row.addWidget(self.inputLayerCombo, 1)
         mainLayout.addLayout(row)
 
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Base year field on input layer:"), 0)
-        self.baseYearField = QComboBox()
-        self.baseYearField.setEditable(True)
-        self.baseYearField.setToolTip("If the input layer has a per-year attribute, select or enter it here.")
-        row.addWidget(self.baseYearField, 1)
-        mainLayout.addLayout(row)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Overlay layers:"), 0)
@@ -127,12 +120,8 @@ class PercentageOverlapDialog(QDialog):
     def updateFieldLists(self):
         self.overlayBeginYearField.clear()
         self.overlayEndYearField.clear()
-        self.baseYearField.clear()
 
         input_layer = self.getCurrentInputLayer()
-        if input_layer is not None:
-            input_fields = input_layer.fields().names()
-            self.baseYearField.addItems([""] + input_fields)
 
         selected_overlays = self.getSelectedOverlayLayers()
         if selected_overlays:
@@ -356,7 +345,6 @@ class PercentageOverlapDialog(QDialog):
     def onCalculate(self):
         input_layer = self.getCurrentInputLayer()
         overlay_layers = self.getSelectedOverlayLayers()
-        base_year_field = self.baseYearField.currentText().strip()
         begin_year_field = self.overlayBeginYearField.currentText().strip()
         end_year_field = self.overlayEndYearField.currentText().strip()
 
@@ -373,18 +361,11 @@ class PercentageOverlapDialog(QDialog):
                 "Please provide both a begin year field and an end year field, or leave both blank to compare full layers."
             )
             return
-        if base_year_field and base_year_field not in input_layer.fields().names():
-            QMessageBox.warning(
-                self,
-                "Base year field invalid",
-                f"The selected base year field '{base_year_field}' was not found on the input layer."
-            )
-            return
 
         self.updateAreaHeaders(input_layer)
         mode = self.outputModeCombo.currentText()
         try:
-            self.results = self.calculateOverlap(input_layer, overlay_layers, base_year_field, begin_year_field, end_year_field, mode)
+            self.results = self.calculateOverlap(input_layer, overlay_layers, begin_year_field, end_year_field, mode)
         except Exception as exc:
             QMessageBox.warning(self, "Calculation failed", f"An error occurred during calculation:\n{exc}")
             return
@@ -462,7 +443,6 @@ class PercentageOverlapDialog(QDialog):
                 f"Overlay features (total across selected layers): {overlay_count}\n"
                 f"Overlay geometries with valid geometry: {overlay_geom_count}\n"
                 f"Base union area (map units²): {base_area:.4f}\n"
-                f"Selected base year field: '{self.baseYearField.currentText().strip()}'\n"
                 f"Selected begin field: '{begin_year_field}'\n"
                 f"Selected end field: '{end_year_field}'\n"
                 f"Overlay layer field presence: {field_presence}\n"
@@ -478,7 +458,7 @@ class PercentageOverlapDialog(QDialog):
         self.populateResultsTable()
         self.saveCsvButton.setEnabled(True)
 
-    def calculateOverlap(self, input_layer, overlay_layers, base_year_field, begin_year_field, end_year_field, mode="Combined"):
+    def calculateOverlap(self, input_layer, overlay_layers, begin_year_field, end_year_field, mode="Combined"):
         results = []
 
         # Helper: parse many date input types into a year (int) or None
@@ -523,29 +503,16 @@ class PercentageOverlapDialog(QDialog):
                 return None
             return union
 
-        # Build base-year geometry mapping
-        base_year_geoms = {}
-        if base_year_field:
-            for feat in input_layer.getFeatures():
-                geom = feat.geometry()
-                if geom is None or geom.isEmpty():
-                    continue
-                year = to_year(feat[base_year_field])
-                if year is None:
-                    continue
-                base_year_geoms.setdefault(year, []).append(geom)
-        else:
-            all_base_geoms = []
-            for feat in input_layer.getFeatures():
-                geom = feat.geometry()
-                if geom is None or geom.isEmpty():
-                    continue
-                all_base_geoms.append(geom)
-            if all_base_geoms:
-                base_year_geoms["all"] = all_base_geoms
-
-        if not base_year_geoms:
+        # Build static base geometry mapping from the input layer
+        base_geoms = []
+        for feat in input_layer.getFeatures():
+            geom = feat.geometry()
+            if geom is None or geom.isEmpty():
+                continue
+            base_geoms.append(geom)
+        if not base_geoms:
             return results
+        base_year_geoms = {"all": base_geoms}
 
         # Build overlay-year geometry mapping
         overlay_year_geoms = {}
@@ -585,10 +552,6 @@ class PercentageOverlapDialog(QDialog):
             return results
 
         def get_years_for_result():
-            if base_year_field and begin_year_field:
-                return sorted(set(base_year_geoms.keys()) | set(overlay_year_geoms.keys()), key=lambda v: (str(v) != "all", v))
-            if base_year_field:
-                return sorted(base_year_geoms.keys(), key=lambda v: (str(v) != "all", v))
             if begin_year_field:
                 return sorted(overlay_year_geoms.keys(), key=lambda v: (str(v) != "all", v))
             return ["all"]
@@ -622,11 +585,7 @@ class PercentageOverlapDialog(QDialog):
         if mode in ("Per overlay layer", "Both"):
             for overlay in overlay_layers:
                 overlay_years = overlay_year_geoms_per_layer.get(overlay.name(), {})
-                if base_year_field and begin_year_field:
-                    years_for_overlay = sorted(set(base_year_geoms.keys()) | set(overlay_years.keys()), key=lambda v: (str(v) != "all", v))
-                elif base_year_field:
-                    years_for_overlay = sorted(base_year_geoms.keys(), key=lambda v: (str(v) != "all", v))
-                elif begin_year_field:
+                if begin_year_field:
                     years_for_overlay = sorted(overlay_years.keys(), key=lambda v: (str(v) != "all", v))
                 else:
                     years_for_overlay = ["all"]

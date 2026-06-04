@@ -7,7 +7,7 @@ This plugin calculates the overlap between a static input layer and one or more 
 - Calculate percentage overlap and absolute overlap area.
 - Output values in the selected area unit plus nautical miles squared (`nm²`).
 - Handle overlay features with a begin/end date range and count them for the entire active year.
-- Honor an optional per-year attribute on the base input layer.
+- Calculate overlap using overlay layer year ranges only.
 - Support combined results, per-overlay-layer results, or both.
 
 ## Installation
@@ -19,9 +19,7 @@ This plugin calculates the overlap between a static input layer and one or more 
 ## Usage
 
 1. Select the base input layer.
-2. (Optional) Select the base input layer's per-year attribute in the "Base year field on input layer" dropdown.
-   - Leave blank to treat the input layer as static over time.
-3. Select one or more overlay layers.
+2. Select one or more overlay layers.
 4. Choose the overlay begin/end fields.
    - Leave both blank to compare full layers without temporal matching.
 5. Choose the output area unit.
@@ -35,7 +33,7 @@ This plugin calculates the overlap between a static input layer and one or more 
 ## Notes
 
 - If the overlay date fields are provided, features are assumed to exist for the entire calendar year in which they are present.
-- If the base year field is provided, the plugin matches overlap by year using the base layer's year values.
+- The plugin matches overlap by year using only the overlay layer date values.
 - Overlap among multiple overlay features is deduplicated by taking a geometric union before intersection.
 
 ## Example
@@ -75,8 +73,7 @@ Workflow:
 
 1. Load both layers in QGIS.
 2. Set the base layer as the input layer.
-3. Set `Base year field on input layer` to `year`.
-4. Add the overlay layer in the overlay layers selection.
+3. Add the overlay layer in the overlay layers selection.
 5. Set `Overlay begin field` to `date_in` and `Overlay end field` to `date_out`.
 6. Choose output mode `Both` to see combined and per-layer overlap rows.
 7. Click `Calculate overlap`.
