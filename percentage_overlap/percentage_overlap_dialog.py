@@ -415,7 +415,38 @@ class PercentageOverlapDialog(QDialog):
                 }]
 
         if not self.results:
-            QMessageBox.information(self, "No results", "Calculation completed but produced no results. Check selected layers, fields, and CRS.")
+            # Provide diagnostics to help user debug empty results
+            base_count = sum(1 for _ in input_layer.getFeatures())
+            overlay_count = sum(sum(1 for _ in ol.getFeatures()) for ol in overlay_layers)
+            overlay_geom_count = 0
+            field_presence = {}
+            for ol in overlay_layers:
+                geom_ct = sum(1 for f in ol.getFeatures() if f.geometry() is not None and not f.geometry().isEmpty())
+                overlay_geom_count += geom_ct
+                fields = ol.fields().names()
+                field_presence[ol.name()] = {
+                    'fields': fields,
+                    'has_begin': begin_year_field in fields if begin_year_field else None,
+                    'has_end': end_year_field in fields if end_year_field else None,
+                }
+            try:
+                base_geoms = [f.geometry() for f in input_layer.getFeatures() if f.geometry() is not None and not f.geometry().isEmpty()]
+                base_union = QgsGeometry.unaryUnion(base_geoms) if base_geoms else None
+                base_area = 0.0 if base_union is None or base_union.isEmpty() else base_union.area()
+            except Exception:
+                base_area = 0.0
+            details = (
+                f"Calculation completed but produced no results.\n"
+                f"Input features: {base_count}\n"
+                f"Overlay features (total across selected layers): {overlay_count}\n"
+                f"Overlay geometries with valid geometry: {overlay_geom_count}\n"
+                f"Base union area (map units²): {base_area:.4f}\n"
+                f"Selected begin field: '{begin_year_field}'\n"
+                f"Selected end field: '{end_year_field}'\n"
+                f"Overlay layer field presence: {field_presence}\n"
+                f"Check CRS, field names, and that features have valid geometries."
+            )
+            QMessageBox.information(self, "No results", details)
             self.results = []
             self.resultsTable.clearContents()
             self.resultsTable.setRowCount(0)
@@ -458,24 +489,28 @@ class PercentageOverlapDialog(QDialog):
             except Exception:
                 pass
             # Python date/datetime
-            if isinstance(val, datetime.datetime) or isinstance(val, datetime.date):
+            if isinstance(val, (datetime.datetime, datetime.date)):
                 return int(val.year)
             # Numeric types
-            try:
-                if isinstance(val, (int,)):
-                    return int(val)
-                if isinstance(val, float):
-                    return int(val)
-            except Exception:
-                pass
-            # Strings like 'YYYY', 'YYYY-MM-DD', etc.
-            try:
-                s = str(val).strip()
-                m = re.match(r'^(\d{4})', s)
-                if m:
+            if isinstance(val, int):
+                return int(val)
+            if isinstance(val, float):
+                return int(val)
+            s = str(val).strip()
+            # Try common date formats
+            for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%d-%m-%Y"):
+                try:
+                    dt = datetime.datetime.strptime(s, fmt)
+                    return int(dt.year)
+                except Exception:
+                    pass
+            # Fallback: search for a 4-digit year anywhere in the string
+            m = re.search(r"(\d{4})", s)
+            if m:
+                try:
                     return int(m.group(1))
-            except Exception:
-                pass
+                except Exception:
+                    return None
             return None
 
         # If mode includes combined, compute combined results
