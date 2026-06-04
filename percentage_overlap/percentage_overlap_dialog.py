@@ -44,6 +44,14 @@ class PercentageOverlapDialog(QDialog):
         mainLayout.addLayout(row)
 
         row = QHBoxLayout()
+        row.addWidget(QLabel("Base year field on input layer:"), 0)
+        self.baseYearField = QComboBox()
+        self.baseYearField.setEditable(True)
+        self.baseYearField.setToolTip("If the input layer has a per-year attribute, select or enter it here.")
+        row.addWidget(self.baseYearField, 1)
+        mainLayout.addLayout(row)
+
+        row = QHBoxLayout()
         row.addWidget(QLabel("Overlay layers:"), 0)
         self.overlayLayerList = QListWidget()
         self.overlayLayerList.setSelectionMode(QListWidget.MultiSelection)
@@ -119,8 +127,13 @@ class PercentageOverlapDialog(QDialog):
     def updateFieldLists(self):
         self.overlayBeginYearField.clear()
         self.overlayEndYearField.clear()
+        self.baseYearField.clear()
 
         input_layer = self.getCurrentInputLayer()
+        if input_layer is not None:
+            input_fields = input_layer.fields().names()
+            self.baseYearField.addItems([""] + input_fields)
+
         selected_overlays = self.getSelectedOverlayLayers()
         if selected_overlays:
             common_fields = self.getCommonFieldNames(selected_overlays)
@@ -343,6 +356,7 @@ class PercentageOverlapDialog(QDialog):
     def onCalculate(self):
         input_layer = self.getCurrentInputLayer()
         overlay_layers = self.getSelectedOverlayLayers()
+        base_year_field = self.baseYearField.currentText().strip()
         begin_year_field = self.overlayBeginYearField.currentText().strip()
         end_year_field = self.overlayEndYearField.currentText().strip()
 
@@ -359,11 +373,18 @@ class PercentageOverlapDialog(QDialog):
                 "Please provide both a begin year field and an end year field, or leave both blank to compare full layers."
             )
             return
+        if base_year_field and base_year_field not in input_layer.fields().names():
+            QMessageBox.warning(
+                self,
+                "Base year field invalid",
+                f"The selected base year field '{base_year_field}' was not found on the input layer."
+            )
+            return
 
         self.updateAreaHeaders(input_layer)
         mode = self.outputModeCombo.currentText()
         try:
-            self.results = self.calculateOverlap(input_layer, overlay_layers, begin_year_field, end_year_field, mode)
+            self.results = self.calculateOverlap(input_layer, overlay_layers, base_year_field, begin_year_field, end_year_field, mode)
         except Exception as exc:
             QMessageBox.warning(self, "Calculation failed", f"An error occurred during calculation:\n{exc}")
             return
@@ -441,6 +462,7 @@ class PercentageOverlapDialog(QDialog):
                 f"Overlay features (total across selected layers): {overlay_count}\n"
                 f"Overlay geometries with valid geometry: {overlay_geom_count}\n"
                 f"Base union area (map units²): {base_area:.4f}\n"
+                f"Selected base year field: '{self.baseYearField.currentText().strip()}'\n"
                 f"Selected begin field: '{begin_year_field}'\n"
                 f"Selected end field: '{end_year_field}'\n"
                 f"Overlay layer field presence: {field_presence}\n"
@@ -456,29 +478,13 @@ class PercentageOverlapDialog(QDialog):
         self.populateResultsTable()
         self.saveCsvButton.setEnabled(True)
 
-    def calculateOverlap(self, input_layer, overlay_layers, begin_year_field, end_year_field, mode="Combined"):
-        # Aggregate overlap per-calendar-year across all selected overlay layers.
+    def calculateOverlap(self, input_layer, overlay_layers, base_year_field, begin_year_field, end_year_field, mode="Combined"):
         results = []
-
-        # Build base (input) union geometry and compute total base area (unique)
-        base_geoms = []
-        for feat in input_layer.getFeatures():
-            geom = feat.geometry()
-            if geom is None or geom.isEmpty():
-                continue
-            base_geoms.append(geom)
-        if not base_geoms:
-            return results
-        base_union = QgsGeometry.unaryUnion(base_geoms)
-        if base_union is None or base_union.isEmpty():
-            return results
-        base_area = base_union.area()
 
         # Helper: parse many date input types into a year (int) or None
         def to_year(val):
             if val is None:
                 return None
-            # QDate/QDateTime from PyQt expose toPyDate/toPython in some versions
             try:
                 if hasattr(val, 'toPyDate'):
                     return int(val.toPyDate().year)
@@ -488,23 +494,19 @@ class PercentageOverlapDialog(QDialog):
                         return int(py.year)
             except Exception:
                 pass
-            # Python date/datetime
             if isinstance(val, (datetime.datetime, datetime.date)):
                 return int(val.year)
-            # Numeric types
             if isinstance(val, int):
                 return int(val)
             if isinstance(val, float):
                 return int(val)
             s = str(val).strip()
-            # Try common date formats
             for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%d-%m-%Y"):
                 try:
                     dt = datetime.datetime.strptime(s, fmt)
                     return int(dt.year)
                 except Exception:
                     pass
-            # Fallback: search for a 4-digit year anywhere in the string
             m = re.search(r"(\d{4})", s)
             if m:
                 try:
@@ -513,134 +515,133 @@ class PercentageOverlapDialog(QDialog):
                     return None
             return None
 
-        # If mode includes combined, compute combined results
+        def union_geoms(geoms):
+            if not geoms:
+                return None
+            union = QgsGeometry.unaryUnion(geoms)
+            if union is None or union.isEmpty():
+                return None
+            return union
+
+        # Build base-year geometry mapping
+        base_year_geoms = {}
+        if base_year_field:
+            for feat in input_layer.getFeatures():
+                geom = feat.geometry()
+                if geom is None or geom.isEmpty():
+                    continue
+                year = to_year(feat[base_year_field])
+                if year is None:
+                    continue
+                base_year_geoms.setdefault(year, []).append(geom)
+        else:
+            all_base_geoms = []
+            for feat in input_layer.getFeatures():
+                geom = feat.geometry()
+                if geom is None or geom.isEmpty():
+                    continue
+                all_base_geoms.append(geom)
+            if all_base_geoms:
+                base_year_geoms["all"] = all_base_geoms
+
+        if not base_year_geoms:
+            return results
+
+        # Build overlay-year geometry mapping
+        overlay_year_geoms = {}
+        overlay_year_geoms_per_layer = {}
+        if begin_year_field and end_year_field:
+            for overlay in overlay_layers:
+                per_layer = {}
+                for feat in overlay.getFeatures():
+                    geom = feat.geometry()
+                    if geom is None or geom.isEmpty():
+                        continue
+                    by = to_year(feat[begin_year_field])
+                    ey = to_year(feat[end_year_field])
+                    if by is None or ey is None:
+                        continue
+                    if ey < by:
+                        by, ey = ey, by
+                    for year in range(by, ey + 1):
+                        overlay_year_geoms.setdefault(year, []).append(geom)
+                        per_layer.setdefault(year, []).append(geom)
+                overlay_year_geoms_per_layer[overlay.name()] = per_layer
+        else:
+            all_overlay_geoms = []
+            for overlay in overlay_layers:
+                geoms = []
+                for feat in overlay.getFeatures():
+                    geom = feat.geometry()
+                    if geom is None or geom.isEmpty():
+                        continue
+                    geoms.append(geom)
+                all_overlay_geoms.extend(geoms)
+                overlay_year_geoms_per_layer[overlay.name()] = {"all": geoms}
+            if all_overlay_geoms:
+                overlay_year_geoms["all"] = all_overlay_geoms
+
+        if not overlay_year_geoms:
+            return results
+
+        def get_years_for_result():
+            if base_year_field and begin_year_field:
+                return sorted(set(base_year_geoms.keys()) | set(overlay_year_geoms.keys()), key=lambda v: (str(v) != "all", v))
+            if base_year_field:
+                return sorted(base_year_geoms.keys(), key=lambda v: (str(v) != "all", v))
+            if begin_year_field:
+                return sorted(overlay_year_geoms.keys(), key=lambda v: (str(v) != "all", v))
+            return ["all"]
+
+        years = get_years_for_result()
+
+        # Combined results
         if mode in ("Combined", "Both"):
-            if not begin_year_field or not end_year_field:
-                # Combine all overlay geometries across layers and compute intersection once
-                overlay_geoms = []
-                for overlay in overlay_layers:
-                    for feat in overlay.getFeatures():
-                        geom = feat.geometry()
-                        if geom is None or geom.isEmpty():
-                            continue
-                        overlay_geoms.append(geom)
-                if overlay_geoms:
-                    overlay_union = QgsGeometry.unaryUnion(overlay_geoms)
-                    if overlay_union is None or overlay_union.isEmpty():
-                        overlap_area = 0.0
-                    else:
-                        inter = base_union.intersection(overlay_union)
-                        overlap_area = 0.0 if inter is None or inter.isEmpty() else inter.area()
+            for year in years:
+                base_geoms = base_year_geoms.get(year, [])
+                overlay_geoms = overlay_year_geoms.get(year, [])
+                base_union = union_geoms(base_geoms)
+                overlay_union = union_geoms(overlay_geoms)
+                base_area = base_union.area() if base_union is not None else 0.0
+                if base_area > 0 and overlay_union is not None:
+                    inter = base_union.intersection(overlay_union)
+                    overlap_area = 0.0 if inter is None or inter.isEmpty() else inter.area()
                 else:
                     overlap_area = 0.0
                 percent = (overlap_area / base_area * 100.0) if base_area > 0 else 0.0
                 results.append({
                     "overlay_layer": "combined",
-                    "begin_year": "all",
-                    "end_year": "all",
+                    "begin_year": year,
+                    "end_year": year,
                     "input_area": base_area,
                     "overlap_area": overlap_area,
                     "percent": percent,
                 })
-            else:
-                # Build combined feature_years across all overlays
-                combined_feature_years = []
-                for overlay in overlay_layers:
-                    for feat in overlay.getFeatures():
-                        b = feat[begin_year_field]
-                        e = feat[end_year_field]
-                        by = to_year(b)
-                        ey = to_year(e)
-                        geom = feat.geometry()
-                        if geom is None or geom.isEmpty():
-                            continue
-                        if by is None or ey is None:
-                            continue
-                        if ey < by:
-                            by, ey = ey, by
-                        combined_feature_years.append((by, ey, geom))
-                if combined_feature_years:
-                    min_year = min(f[0] for f in combined_feature_years)
-                    max_year = max(f[1] for f in combined_feature_years)
-                    for year in range(min_year, max_year + 1):
-                        year_geoms = [geom for (by, ey, geom) in combined_feature_years if by <= year <= ey]
-                        if not year_geoms:
-                            overlap_area = 0.0
-                        else:
-                            overlay_union = QgsGeometry.unaryUnion(year_geoms)
-                            if overlay_union is None or overlay_union.isEmpty():
-                                overlap_area = 0.0
-                            else:
-                                inter = base_union.intersection(overlay_union)
-                                overlap_area = 0.0 if inter is None or inter.isEmpty() else inter.area()
-                        percent = (overlap_area / base_area * 100.0) if base_area > 0 else 0.0
-                        results.append({
-                            "overlay_layer": "combined",
-                            "begin_year": year,
-                            "end_year": year,
-                            "input_area": base_area,
-                            "overlap_area": overlap_area,
-                            "percent": percent,
-                        })
 
-        # Per-overlay layer results (if requested)
+        # Per-overlay layer results
         if mode in ("Per overlay layer", "Both"):
             for overlay in overlay_layers:
-                # No temporal fields -> single 'all' row per overlay
-                if not begin_year_field or not end_year_field:
-                    overlay_geoms = [feat.geometry() for feat in overlay.getFeatures() if feat.geometry() is not None and not feat.geometry().isEmpty()]
-                    if overlay_geoms:
-                        overlay_union = QgsGeometry.unaryUnion(overlay_geoms)
-                        if overlay_union is None or overlay_union.isEmpty():
-                            overlap_area = 0.0
-                        else:
-                            inter = base_union.intersection(overlay_union)
-                            overlap_area = 0.0 if inter is None or inter.isEmpty() else inter.area()
+                overlay_years = overlay_year_geoms_per_layer.get(overlay.name(), {})
+                if base_year_field and begin_year_field:
+                    years_for_overlay = sorted(set(base_year_geoms.keys()) | set(overlay_years.keys()), key=lambda v: (str(v) != "all", v))
+                elif base_year_field:
+                    years_for_overlay = sorted(base_year_geoms.keys(), key=lambda v: (str(v) != "all", v))
+                elif begin_year_field:
+                    years_for_overlay = sorted(overlay_years.keys(), key=lambda v: (str(v) != "all", v))
+                else:
+                    years_for_overlay = ["all"]
+
+                for year in years_for_overlay:
+                    base_geoms = base_year_geoms.get(year, [])
+                    overlay_geoms = overlay_years.get(year, [])
+                    base_union = union_geoms(base_geoms)
+                    overlay_union = union_geoms(overlay_geoms)
+                    base_area = base_union.area() if base_union is not None else 0.0
+                    if base_area > 0 and overlay_union is not None:
+                        inter = base_union.intersection(overlay_union)
+                        overlap_area = 0.0 if inter is None or inter.isEmpty() else inter.area()
                     else:
                         overlap_area = 0.0
-                    percent = (overlap_area / base_area * 100.0) if base_area > 0 else 0.0
-                    results.append({
-                        "overlay_layer": overlay.name(),
-                        "begin_year": "all",
-                        "end_year": "all",
-                        "input_area": base_area,
-                        "overlap_area": overlap_area,
-                        "percent": percent,
-                    })
-                    continue
-
-                # Temporal fields: collect per-feature years for this overlay
-                ov_feature_years = []
-                for feat in overlay.getFeatures():
-                    b = feat[begin_year_field]
-                    e = feat[end_year_field]
-                    by = to_year(b)
-                    ey = to_year(e)
-                    geom = feat.geometry()
-                    if geom is None or geom.isEmpty():
-                        continue
-                    if by is None or ey is None:
-                        continue
-                    if ey < by:
-                        by, ey = ey, by
-                    ov_feature_years.append((by, ey, geom))
-
-                if not ov_feature_years:
-                    continue
-
-                ov_min = min(f[0] for f in ov_feature_years)
-                ov_max = max(f[1] for f in ov_feature_years)
-                for year in range(ov_min, ov_max + 1):
-                    year_geoms = [geom for (by, ey, geom) in ov_feature_years if by <= year <= ey]
-                    if not year_geoms:
-                        overlap_area = 0.0
-                    else:
-                        overlay_union = QgsGeometry.unaryUnion(year_geoms)
-                        if overlay_union is None or overlay_union.isEmpty():
-                            overlap_area = 0.0
-                        else:
-                            inter = base_union.intersection(overlay_union)
-                            overlap_area = 0.0 if inter is None or inter.isEmpty() else inter.area()
                     percent = (overlap_area / base_area * 100.0) if base_area > 0 else 0.0
                     results.append({
                         "overlay_layer": overlay.name(),
@@ -651,7 +652,6 @@ class PercentageOverlapDialog(QDialog):
                         "percent": percent,
                     })
 
-        # Sort results for stable output: by overlay layer then begin_year
         def sort_key(r):
             layer = r.get('overlay_layer') or ''
             by = r.get('begin_year')
