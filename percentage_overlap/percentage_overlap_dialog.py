@@ -503,7 +503,7 @@ class PercentageOverlapDialog(QDialog):
                 return None
             return union
 
-        # Build static base geometry mapping from the input layer
+        # Build static base geometry from the input layer.
         base_geoms = []
         for feat in input_layer.getFeatures():
             geom = feat.geometry()
@@ -512,7 +512,7 @@ class PercentageOverlapDialog(QDialog):
             base_geoms.append(geom)
         if not base_geoms:
             return results
-        base_year_geoms = {"all": base_geoms}
+        base_union = union_geoms(base_geoms)
 
         # Build overlay-year geometry mapping
         overlay_year_geoms = {}
@@ -561,9 +561,7 @@ class PercentageOverlapDialog(QDialog):
         # Combined results
         if mode in ("Combined", "Both"):
             for year in years:
-                base_geoms = base_year_geoms.get(year, [])
                 overlay_geoms = overlay_year_geoms.get(year, [])
-                base_union = union_geoms(base_geoms)
                 overlay_union = union_geoms(overlay_geoms)
                 base_area = base_union.area() if base_union is not None else 0.0
                 if base_area > 0 and overlay_union is not None:
@@ -591,9 +589,7 @@ class PercentageOverlapDialog(QDialog):
                     years_for_overlay = ["all"]
 
                 for year in years_for_overlay:
-                    base_geoms = base_year_geoms.get(year, [])
                     overlay_geoms = overlay_years.get(year, [])
-                    base_union = union_geoms(base_geoms)
                     overlay_union = union_geoms(overlay_geoms)
                     base_area = base_union.area() if base_union is not None else 0.0
                     if base_area > 0 and overlay_union is not None:
