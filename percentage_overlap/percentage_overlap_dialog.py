@@ -476,23 +476,121 @@ class PercentageOverlapDialog(QDialog):
                 pass
             if isinstance(val, (datetime.datetime, datetime.date)):
                 return int(val.year)
-            if isinstance(val, int):
-                return int(val)
-            if isinstance(val, float):
-                return int(val)
-            s = str(val).strip()
-            for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%d-%m-%Y"):
+
+            def parse_excel_serial(serial_value):
                 try:
-                    dt = datetime.datetime.strptime(s, fmt)
-                    return int(dt.year)
+                    serial = int(serial_value)
+                except Exception:
+                    return None
+                if serial <= 0:
+                    return None
+                base_date = datetime.date(1899, 12, 30)
+                try:
+                    return int((base_date + datetime.timedelta(days=serial)).year)
+                except Exception:
+                    return None
+
+            if isinstance(val, (int, float)):
+                if isinstance(val, float) and not val.is_integer():
+                    serial_year = parse_excel_serial(val)
+                    if serial_year is not None:
+                        return serial_year
+                integer_value = int(val)
+                current_year = datetime.datetime.now().year
+                if 1000 <= integer_value <= current_year + 10:
+                    return integer_value
+                if 10000 <= integer_value <= 60000:
+                    serial_year = parse_excel_serial(integer_value)
+                    if serial_year is not None:
+                        return serial_year
+                return integer_value if integer_value > 0 else None
+
+            s = str(val).strip()
+            if not s:
+                return None
+
+            # Normalize Excel-style datetime strings with slash separators in the time component.
+            normalized = s
+            parts = s.split(None, 1)
+            if len(parts) == 2 and re.match(r"^\d{1,2}/\d{1,2}/\d{2,4}$", parts[0]) and '/' in parts[1]:
+                normalized = f"{parts[0]} {parts[1].replace('/', ':')}"
+
+            if re.fullmatch(r"\d+(\.\d+)?", s):
+                try:
+                    serial_value = float(s)
+                    if 10000 <= serial_value <= 60000:
+                        serial_year = parse_excel_serial(serial_value)
+                        if serial_year is not None:
+                            return serial_year
+                    integer_value = int(serial_value)
+                    current_year = datetime.datetime.now().year
+                    if 1000 <= integer_value <= current_year + 10:
+                        return integer_value
                 except Exception:
                     pass
-            m = re.search(r"(\d{4})", s)
+
+            def try_formats(text, formats):
+                for fmt in formats:
+                    try:
+                        dt = datetime.datetime.strptime(text, fmt)
+                        return int(dt.year)
+                    except Exception:
+                        continue
+                return None
+
+            formats = [
+                "%m/%d/%Y %H:%M:%S",
+                "%m/%d/%Y %H:%M",
+                "%m/%d/%Y %I:%M:%S %p",
+                "%m/%d/%Y %I:%M %p",
+                "%m/%d/%y %H:%M:%S",
+                "%m/%d/%y %H:%M",
+                "%m/%d/%y %I:%M:%S %p",
+                "%m/%d/%y %I:%M %p",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M",
+                "%Y/%m/%d %H:%M:%S",
+                "%Y/%m/%d %H:%M",
+                "%d/%m/%Y %H:%M:%S",
+                "%d/%m/%Y %H:%M",
+                "%d-%m-%Y %H:%M:%S",
+                "%d-%m-%Y %H:%M",
+                "%m/%d/%Y",
+                "%m/%d/%y",
+                "%Y-%m-%d",
+                "%Y/%m/%d",
+                "%d/%m/%Y",
+                "%d-%m-%Y",
+                "%b %d %Y",
+                "%B %d %Y",
+                "%d %b %Y",
+                "%d %B %Y",
+                "%b %d, %Y",
+                "%B %d, %Y",
+            ]
+            year = try_formats(normalized, formats)
+            if year is not None:
+                return year
+
+            try:
+                if 'T' in normalized:
+                    dt = datetime.datetime.fromisoformat(normalized.replace('Z', '+00:00'))
+                    return int(dt.year)
+            except Exception:
+                pass
+
+            m = re.search(r"(?<!\d)(19|20)\d{2}(?!\d)", normalized)
+            if m:
+                try:
+                    return int(m.group(0))
+                except Exception:
+                    pass
+            m = re.search(r"(\d{4})", normalized)
             if m:
                 try:
                     return int(m.group(1))
                 except Exception:
-                    return None
+                    pass
             return None
 
         def union_geoms(geoms):
