@@ -18,6 +18,7 @@ from qgis.core import (
     QgsProject,
     QgsVectorLayer,
     QgsFeatureRequest,
+    QgsDistanceArea,
     QgsUnitTypes,
 )
 import datetime
@@ -205,7 +206,7 @@ class PercentageOverlapDialog(QDialog):
         if map_unit in (QgsUnitTypes.DistanceFeet, QgsUnitTypes.DistanceYards, QgsUnitTypes.DistanceMiles, QgsUnitTypes.DistanceNauticalMiles):
             return ["ft²", "yd²", "mi²", "nm²", "m²", "km²", "cm²", "mm²", "in²", "map units²"]
         if map_unit == QgsUnitTypes.DistanceDegrees:
-            return ["deg²", "map units²"]
+            return ["m²", "km²", "cm²", "mm²", "ha", "ft²", "yd²", "mi²", "nm²", "in²", "deg²", "map units²"]
         return ["map units²"]
 
     def getAreaConversionFactor(self, layer, output_unit):
@@ -215,6 +216,11 @@ class PercentageOverlapDialog(QDialog):
             map_unit = layer.crs().mapUnits()
         except Exception:
             return 1.0
+
+        # If the layer is geographic (degrees) we measure areas with QgsDistanceArea
+        # which returns square meters; for conversion purposes treat degrees as meters.
+        if map_unit == QgsUnitTypes.DistanceDegrees:
+            map_unit = QgsUnitTypes.DistanceMeters
 
         if map_unit == QgsUnitTypes.DistanceMeters:
             if output_unit == "m²":
@@ -381,7 +387,27 @@ class PercentageOverlapDialog(QDialog):
                 try:
                     base_geoms = [f.geometry() for f in input_layer.getFeatures() if f.geometry() is not None and not f.geometry().isEmpty()]
                     base_union = QgsGeometry.unaryUnion(base_geoms) if base_geoms else None
-                    base_area = 0.0 if base_union is None or base_union.isEmpty() else base_union.area()
+                    if base_union is None or base_union.isEmpty():
+                        base_area = 0.0
+                    else:
+                        dah = QgsDistanceArea()
+                        try:
+                            dah.setSourceCrs(input_layer.crs(), QgsProject.instance().transformContext())
+                        except Exception:
+                            try:
+                                dah.setSourceCrs(input_layer.crs())
+                            except Exception:
+                                pass
+                        try:
+                            ell = QgsProject.instance().ellipsoid()
+                            if ell:
+                                dah.setEllipsoid(ell)
+                        except Exception:
+                            pass
+                        try:
+                            base_area = dah.measureArea(base_union)
+                        except Exception:
+                            base_area = 0.0
                 except Exception:
                     base_area = 0.0
                 details = (
@@ -403,7 +429,16 @@ class PercentageOverlapDialog(QDialog):
                 if overlay_geoms:
                     overlay_union = QgsGeometry.unaryUnion(overlay_geoms)
                     inter = base_union.intersection(overlay_union) if base_union is not None else None
-                    overlap_area = 0.0 if inter is None or inter.isEmpty() else inter.area()
+                    if inter is None or inter.isEmpty():
+                        overlap_area = 0.0
+                    else:
+                        if 'dah' in locals():
+                            try:
+                                overlap_area = dah.measureArea(inter)
+                            except Exception:
+                                overlap_area = inter.area()
+                        else:
+                            overlap_area = inter.area()
                 else:
                     overlap_area = 0.0
                 percent = (overlap_area / base_area * 100.0) if base_area > 0 else 0.0
@@ -434,7 +469,27 @@ class PercentageOverlapDialog(QDialog):
             try:
                 base_geoms = [f.geometry() for f in input_layer.getFeatures() if f.geometry() is not None and not f.geometry().isEmpty()]
                 base_union = QgsGeometry.unaryUnion(base_geoms) if base_geoms else None
-                base_area = 0.0 if base_union is None or base_union.isEmpty() else base_union.area()
+                if base_union is None or base_union.isEmpty():
+                    base_area = 0.0
+                else:
+                    dah = QgsDistanceArea()
+                    try:
+                        dah.setSourceCrs(input_layer.crs(), QgsProject.instance().transformContext())
+                    except Exception:
+                        try:
+                            dah.setSourceCrs(input_layer.crs())
+                        except Exception:
+                            pass
+                    try:
+                        ell = QgsProject.instance().ellipsoid()
+                        if ell:
+                            dah.setEllipsoid(ell)
+                    except Exception:
+                        pass
+                    try:
+                        base_area = dah.measureArea(base_union)
+                    except Exception:
+                        base_area = 0.0
             except Exception:
                 base_area = 0.0
             details = (
@@ -601,6 +656,24 @@ class PercentageOverlapDialog(QDialog):
                 return None
             return union
 
+        # Distance/area helper using layer CRS and project ellipsoid
+        def make_area_helper(layer):
+            d = QgsDistanceArea()
+            try:
+                d.setSourceCrs(layer.crs(), QgsProject.instance().transformContext())
+            except Exception:
+                try:
+                    d.setSourceCrs(layer.crs())
+                except Exception:
+                    pass
+            try:
+                ell = QgsProject.instance().ellipsoid()
+                if ell:
+                    d.setEllipsoid(ell)
+            except Exception:
+                pass
+            return d
+
         # Build static base geometry from the input layer.
         base_geoms = []
         for feat in input_layer.getFeatures():
@@ -611,6 +684,7 @@ class PercentageOverlapDialog(QDialog):
         if not base_geoms:
             return results
         base_union = union_geoms(base_geoms)
+        area_helper = make_area_helper(input_layer)
 
         # Build overlay-year geometry mapping
         overlay_year_geoms = {}
@@ -661,10 +735,10 @@ class PercentageOverlapDialog(QDialog):
             for year in years:
                 overlay_geoms = overlay_year_geoms.get(year, [])
                 overlay_union = union_geoms(overlay_geoms)
-                base_area = base_union.area() if base_union is not None else 0.0
-                if base_area > 0 and overlay_union is not None:
+                base_area = 0.0 if base_union is None or base_union.isEmpty() else area_helper.measureArea(base_union)
+                if base_area > 0 and overlay_union is not None and not overlay_union.isEmpty():
                     inter = base_union.intersection(overlay_union)
-                    overlap_area = 0.0 if inter is None or inter.isEmpty() else inter.area()
+                    overlap_area = 0.0 if inter is None or inter.isEmpty() else area_helper.measureArea(inter)
                 else:
                     overlap_area = 0.0
                 percent = (overlap_area / base_area * 100.0) if base_area > 0 else 0.0
@@ -689,10 +763,10 @@ class PercentageOverlapDialog(QDialog):
                 for year in years_for_overlay:
                     overlay_geoms = overlay_years.get(year, [])
                     overlay_union = union_geoms(overlay_geoms)
-                    base_area = base_union.area() if base_union is not None else 0.0
-                    if base_area > 0 and overlay_union is not None:
+                    base_area = 0.0 if base_union is None or base_union.isEmpty() else area_helper.measureArea(base_union)
+                    if base_area > 0 and overlay_union is not None and not overlay_union.isEmpty():
                         inter = base_union.intersection(overlay_union)
-                        overlap_area = 0.0 if inter is None or inter.isEmpty() else inter.area()
+                        overlap_area = 0.0 if inter is None or inter.isEmpty() else area_helper.measureArea(inter)
                     else:
                         overlap_area = 0.0
                     percent = (overlap_area / base_area * 100.0) if base_area > 0 else 0.0
@@ -750,13 +824,35 @@ class PercentageOverlapDialog(QDialog):
             request_overlay.setFilterExpression(expr)
 
         input_geometries = []
-        total_input_area = 0.0
         for feature in input_layer.getFeatures(request_input):
             geom = feature.geometry()
             if geom is None or geom.isEmpty():
                 continue
-            total_input_area += geom.area()
             input_geometries.append(geom)
+
+        # Compute total input area using a proper area helper (ellipsoidal if needed)
+        total_input_area = 0.0
+        if input_geometries:
+            base_union = QgsGeometry.unaryUnion(input_geometries)
+            if base_union is not None and not base_union.isEmpty():
+                dah = QgsDistanceArea()
+                try:
+                    dah.setSourceCrs(input_layer.crs(), QgsProject.instance().transformContext())
+                except Exception:
+                    try:
+                        dah.setSourceCrs(input_layer.crs())
+                    except Exception:
+                        pass
+                try:
+                    ell = QgsProject.instance().ellipsoid()
+                    if ell:
+                        dah.setEllipsoid(ell)
+                except Exception:
+                    pass
+                try:
+                    total_input_area = dah.measureArea(base_union)
+                except Exception:
+                    total_input_area = 0.0
 
         overlay_geometries = []
         for feature in overlay_layer.getFeatures(request_overlay):
@@ -768,14 +864,27 @@ class PercentageOverlapDialog(QDialog):
         overlap_area = 0.0
         if total_input_area > 0 and overlay_geometries:
             overlay_union = QgsGeometry.unaryUnion(overlay_geometries)
-            if overlay_union is not None and not overlay_union.isEmpty():
-                for input_geom in input_geometries:
-                    if not input_geom.intersects(overlay_union):
-                        continue
-                    intersection = input_geom.intersection(overlay_union)
-                    if intersection is None or intersection.isEmpty():
-                        continue
-                    overlap_area += intersection.area()
+            if overlay_union is not None and not overlay_union.isEmpty() and base_union is not None and not base_union.isEmpty():
+                dah = QgsDistanceArea()
+                try:
+                    dah.setSourceCrs(input_layer.crs(), QgsProject.instance().transformContext())
+                except Exception:
+                    try:
+                        dah.setSourceCrs(input_layer.crs())
+                    except Exception:
+                        pass
+                try:
+                    ell = QgsProject.instance().ellipsoid()
+                    if ell:
+                        dah.setEllipsoid(ell)
+                except Exception:
+                    pass
+                inter = base_union.intersection(overlay_union)
+                if inter is not None and not inter.isEmpty():
+                    try:
+                        overlap_area = dah.measureArea(inter)
+                    except Exception:
+                        overlap_area = 0.0
 
         return overlap_area, total_input_area
 
