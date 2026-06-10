@@ -1,9 +1,10 @@
 name=Temporal Overlap Calculator
 qgisMinimumVersion=3.0
-description=Temporal overlap calculator - measures overlay coverage by year
+description=Temporal overlap calculator - measures how overlay layers cover input layers by year
 version=1.0.0
 author=Development Team
 email=dev@example.com
 about=Calculates temporal overlap between input and overlay layers
 category=Analysis
+icon=icon.png
 experimental=False
