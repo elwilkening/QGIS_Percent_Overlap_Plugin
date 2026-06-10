@@ -39,11 +39,11 @@ class OverlapDialog(QDialog):
         """
         super().__init__(iface.mainWindow())
         self.iface = iface
+        self.results = []
         self.setWindowTitle("Temporal Overlap Calculator")
         self.resize(900, 600)
         self.setupUi()
         self.refreshLayerList()
-        self.results = []
 
     def setupUi(self):
         """Set up the user interface."""
@@ -459,8 +459,8 @@ class OverlapDialog(QDialog):
                     if geom is None or geom.isEmpty():
                         continue
 
-                    begin_year = parse_date(feat.get(begin_field))
-                    end_year = parse_date(feat.get(end_field))
+                    begin_year = parse_date(feat[begin_field])
+                    end_year = parse_date(feat[end_field])
 
                     if begin_year is None or end_year is None:
                         continue
