@@ -376,13 +376,14 @@ class OverlapDialog(QDialog):
         input_geoms = []
         for feat in input_layer.getFeatures():
             geom = feat.geometry()
-            if geom and not geom.isEmpty():
-                input_geoms.append(geom)
+            valid_geom = self.normalizeGeometry(geom)
+            if valid_geom is not None and not valid_geom.isEmpty():
+                input_geoms.append(valid_geom)
 
         if not input_geoms:
             return results
 
-        input_union = QgsGeometry.unaryUnion(input_geoms)
+        input_union = self.safeUnion(input_geoms)
         if input_union is None or input_union.isEmpty():
             return results
 
@@ -455,7 +456,7 @@ class OverlapDialog(QDialog):
             # Temporal mode: group by year
             for overlay in overlay_layers:
                 for feat in overlay.getFeatures():
-                    geom = feat.geometry()
+                    geom = self.normalizeGeometry(feat.geometry())
                     if geom is None or geom.isEmpty():
                         continue
 
@@ -491,7 +492,7 @@ class OverlapDialog(QDialog):
                 continue
 
             # Union overlays (so overlapping features count only once)
-            overlay_union = QgsGeometry.unaryUnion(overlay_geoms)
+            overlay_union = self.safeUnion(overlay_geoms)
             if overlay_union is None or overlay_union.isEmpty():
                 continue
 
@@ -531,14 +532,68 @@ class OverlapDialog(QDialog):
             dah.setSourceCrs(layer.crs(), QgsProject.instance().transformContext())
             try:
                 ell = QgsProject.instance().ellipsoid()
-                if ell:
-                    dah.setEllipsoid(ell)
+                if not ell:
+                    ell = 'WGS84'
+                dah.setEllipsoid(ell)
+                if hasattr(dah, 'setEllipsoidalMode'):
+                    dah.setEllipsoidalMode(True)
             except Exception:
                 pass
-            return dah.measureArea(geom)
+            return abs(dah.measureArea(geom))
         except Exception:
+            try:
+                valid = self.normalizeGeometry(geom)
+                if valid is not None and not valid.isEmpty():
+                    return abs(dah.measureArea(valid))
+            except Exception:
+                pass
             # Fallback to planar area
-            return geom.area()
+            return abs(geom.area())
+
+    def normalizeGeometry(self, geom):
+        """Return a valid geometry if possible."""
+        if geom is None or geom.isEmpty():
+            return None
+        try:
+            valid = geom
+            if hasattr(geom, 'isGeosValid') and not geom.isGeosValid():
+                valid = geom.makeValid() or geom
+            if valid is None or valid.isEmpty():
+                valid = geom.buffer(0, 5)
+            if valid is not None and not valid.isEmpty():
+                return valid
+        except Exception:
+            pass
+        return geom
+
+    def safeUnion(self, geoms):
+        """Union geometries safely, filtering invalid geometry first."""
+        valid_geoms = []
+        for geom in geoms:
+            geom = self.normalizeGeometry(geom)
+            if geom is not None and not geom.isEmpty():
+                valid_geoms.append(geom)
+
+        if not valid_geoms:
+            return None
+        if len(valid_geoms) == 1:
+            return valid_geoms[0]
+
+        try:
+            union = QgsGeometry.unaryUnion(valid_geoms)
+            if union is not None and not union.isEmpty():
+                return union
+        except Exception:
+            pass
+
+        # Fallback: return collected geometries if union fails.
+        try:
+            union = QgsGeometry.collectGeometry(valid_geoms)
+            if union is not None and not union.isEmpty():
+                return union
+        except Exception:
+            pass
+        return None
 
     def populateResultsTable(self):
         """Populate results table with calculated data."""
