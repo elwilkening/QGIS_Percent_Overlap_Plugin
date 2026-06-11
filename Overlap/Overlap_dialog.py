@@ -554,6 +554,48 @@ class OverlapDialog(QDialog):
                 except Exception as e:
                     print(f"[Overlap] Year {year}: fallback projection/intersection failed: {e}")
 
+                # Additional per-feature diagnostics when union intersection fails
+                try:
+                    per_feature_inters = []
+                    for idx, feat_geom in enumerate(overlay_geoms):
+                        try:
+                            if feat_geom is None or feat_geom.isEmpty():
+                                continue
+                            intersects = input_union.intersects(feat_geom)
+                            if intersects:
+                                inter_f = input_union.intersection(feat_geom)
+                                if inter_f is not None and not inter_f.isEmpty():
+                                    per_feature_inters.append(inter_f)
+                                    area_f = self.getGeometryArea(inter_f, input_layer)
+                                else:
+                                    area_f = 0.0
+                                print(f"[Overlap] Year {year}: feature {idx} intersects true, area={area_f}")
+                                # continue scanning to accumulate intersections
+                            else:
+                                if idx < 5:
+                                    bbox_f = None
+                                    try:
+                                        b = feat_geom.boundingBox()
+                                        bbox_f = (b.xMinimum(), b.yMinimum(), b.xMaximum(), b.yMaximum())
+                                    except Exception:
+                                        pass
+                                    print(f"[Overlap] Year {year}: feature {idx} intersects false, bbox={bbox_f}")
+                        except Exception as e:
+                            print(f"[Overlap] Year {year}: feature {idx} test failed: {e}")
+                    # If we collected per-feature intersections, union them and measure
+                    if per_feature_inters:
+                        try:
+                            inter_union = self.safeUnion(per_feature_inters)
+                            if inter_union is not None and not inter_union.isEmpty():
+                                overlap_area = self.getGeometryArea(inter_union, input_layer)
+                                print(f"[Overlap] Year {year}: per-feature intersection union area={overlap_area}")
+                            else:
+                                print(f"[Overlap] Year {year}: per-feature intersection union empty")
+                        except Exception as e:
+                            print(f"[Overlap] Year {year}: per-feature union failed: {e}")
+                except Exception:
+                    pass
+
             percent = (overlap_area / input_area * 100.0) if input_area > 0 else 0.0
 
             results.append({
@@ -631,40 +673,39 @@ class OverlapDialog(QDialog):
             return True
         except Exception:
             return False
+    def reprojectGeometry(self, geom, source_crs, dest_epsg):
+        """Return a copy of geom reprojected to dest_epsg, or None on failure."""
+        try:
+            from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform
 
-        def reprojectGeometry(self, geom, source_crs, dest_epsg):
-            """Return a copy of geom reprojected to dest_epsg, or None on failure."""
+            dest = QgsCoordinateReferenceSystem(f"EPSG:{dest_epsg}")
+            xform = QgsCoordinateTransform(source_crs, dest, QgsProject.instance().transformContext())
+            g = QgsGeometry(geom)
+            g.transform(xform)
+            return g
+        except Exception:
+            return None
+
+    def measureAreaWithCrs(self, geom, crs):
+        """Measure area of geom assuming coordinates are in the provided CRS."""
+        try:
+            dah = QgsDistanceArea()
+            dah.setSourceCrs(crs, QgsProject.instance().transformContext())
             try:
-                from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform
-
-                dest = QgsCoordinateReferenceSystem(f"EPSG:{dest_epsg}")
-                xform = QgsCoordinateTransform(source_crs, dest, QgsProject.instance().transformContext())
-                g = QgsGeometry(geom)
-                g.transform(xform)
-                return g
+                ell = QgsProject.instance().ellipsoid()
+                if not ell:
+                    ell = 'WGS84'
+                dah.setEllipsoid(ell)
+                if hasattr(dah, 'setEllipsoidalMode'):
+                    dah.setEllipsoidalMode(True)
             except Exception:
-                return None
-
-        def measureAreaWithCrs(self, geom, crs):
-            """Measure area of geom assuming coordinates are in the provided CRS."""
+                pass
+            return abs(dah.measureArea(geom))
+        except Exception:
             try:
-                dah = QgsDistanceArea()
-                dah.setSourceCrs(crs, QgsProject.instance().transformContext())
-                try:
-                    ell = QgsProject.instance().ellipsoid()
-                    if not ell:
-                        ell = 'WGS84'
-                    dah.setEllipsoid(ell)
-                    if hasattr(dah, 'setEllipsoidalMode'):
-                        dah.setEllipsoidalMode(True)
-                except Exception:
-                    pass
-                return abs(dah.measureArea(geom))
+                return abs(geom.area())
             except Exception:
-                try:
-                    return abs(geom.area())
-                except Exception:
-                    return 0.0
+                return 0.0
 
     def safeUnion(self, geoms):
         """Union geometries safely, filtering invalid geometry first."""
