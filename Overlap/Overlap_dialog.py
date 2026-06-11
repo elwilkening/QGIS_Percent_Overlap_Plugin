@@ -4,6 +4,7 @@ Dialog and calculation logic for temporal overlay calculator.
 
 import datetime
 import re
+import math
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtWidgets import (
     QDialog,
@@ -479,6 +480,19 @@ class OverlapDialog(QDialog):
                     for year in range(begin_year, end_year + 1):
                         if year not in year_geoms:
                             year_geoms[year] = []
+                        # Skip geometries with non-finite coordinates, try to repair once
+                        if not self.geometryIsFinite(geom):
+                            try:
+                                repaired = geom.makeValid() or geom
+                                if repaired is not None and not repaired.isEmpty():
+                                    repaired = repaired.buffer(0, 5)
+                                if repaired is not None and not repaired.isEmpty() and self.geometryIsFinite(repaired):
+                                    year_geoms[year].append(repaired)
+                                    continue
+                            except Exception:
+                                pass
+                            print(f"[Overlap] Year {year}: skipping feature with invalid coordinates")
+                            continue
                         year_geoms[year].append(geom)
         else:
             # Non-temporal mode: combine all
@@ -584,13 +598,44 @@ class OverlapDialog(QDialog):
             pass
         return geom
 
+    def geometryIsFinite(self, geom):
+        """Return True if geometry's bounding box coordinates are finite numbers."""
+        if geom is None or geom.isEmpty():
+            return False
+        try:
+            bbox = geom.boundingBox()
+            vals = [bbox.xMinimum(), bbox.yMinimum(), bbox.xMaximum(), bbox.yMaximum()]
+            for v in vals:
+                if not isinstance(v, (int, float)) or not math.isfinite(v):
+                    return False
+            return True
+        except Exception:
+            return False
+
     def safeUnion(self, geoms):
         """Union geometries safely, filtering invalid geometry first."""
         valid_geoms = []
         for geom in geoms:
             geom = self.normalizeGeometry(geom)
-            if geom is not None and not geom.isEmpty():
-                valid_geoms.append(geom)
+            if geom is None or geom.isEmpty():
+                continue
+
+            # Ensure geometry has finite coordinates; try to repair once if not.
+            if not self.geometryIsFinite(geom):
+                try:
+                    repaired = geom.makeValid() or geom
+                    if repaired is not None and not repaired.isEmpty():
+                        repaired = repaired.buffer(0, 5)
+                    if repaired is not None and not repaired.isEmpty() and self.geometryIsFinite(repaired):
+                        valid_geoms.append(repaired)
+                        continue
+                except Exception:
+                    pass
+
+                print("[Overlap] Skipping geometry with non-finite coordinates")
+                continue
+
+            valid_geoms.append(geom)
 
         if not valid_geoms:
             return None
