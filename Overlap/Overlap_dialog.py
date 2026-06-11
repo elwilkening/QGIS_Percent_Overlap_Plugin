@@ -531,8 +531,28 @@ class OverlapDialog(QDialog):
                 print(f"[Overlap] Year {year}: intersection returned None")
             else:
                 print(f"[Overlap] Year {year}: intersection isEmpty={intersection.isEmpty()}")
+
             if intersection and not intersection.isEmpty():
                 overlap_area = self.getGeometryArea(intersection, input_layer)
+            else:
+                # Fallback: try reprojecting to a projected CRS and intersect there
+                try:
+                    src_crs = input_layer.crs()
+                    proj_epsg = 3857
+                    in_proj = self.reprojectGeometry(input_union, src_crs, proj_epsg)
+                    ov_proj = self.reprojectGeometry(overlay_union, src_crs, proj_epsg)
+                    if in_proj is not None and ov_proj is not None:
+                        inter2 = in_proj.intersection(ov_proj)
+                        if inter2 is not None and not inter2.isEmpty():
+                            dest_crs = __import__('qgis').core.QgsCoordinateReferenceSystem(f"EPSG:{proj_epsg}")
+                            overlap_area = self.measureAreaWithCrs(inter2, dest_crs)
+                            print(f"[Overlap] Year {year}: fallback projected intersection area={overlap_area}")
+                        else:
+                            print(f"[Overlap] Year {year}: fallback projected intersection empty")
+                    else:
+                        print(f"[Overlap] Year {year}: could not reproject geometries for fallback")
+                except Exception as e:
+                    print(f"[Overlap] Year {year}: fallback projection/intersection failed: {e}")
 
             percent = (overlap_area / input_area * 100.0) if input_area > 0 else 0.0
 
@@ -611,6 +631,40 @@ class OverlapDialog(QDialog):
             return True
         except Exception:
             return False
+
+        def reprojectGeometry(self, geom, source_crs, dest_epsg):
+            """Return a copy of geom reprojected to dest_epsg, or None on failure."""
+            try:
+                from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform
+
+                dest = QgsCoordinateReferenceSystem(f"EPSG:{dest_epsg}")
+                xform = QgsCoordinateTransform(source_crs, dest, QgsProject.instance().transformContext())
+                g = QgsGeometry(geom)
+                g.transform(xform)
+                return g
+            except Exception:
+                return None
+
+        def measureAreaWithCrs(self, geom, crs):
+            """Measure area of geom assuming coordinates are in the provided CRS."""
+            try:
+                dah = QgsDistanceArea()
+                dah.setSourceCrs(crs, QgsProject.instance().transformContext())
+                try:
+                    ell = QgsProject.instance().ellipsoid()
+                    if not ell:
+                        ell = 'WGS84'
+                    dah.setEllipsoid(ell)
+                    if hasattr(dah, 'setEllipsoidalMode'):
+                        dah.setEllipsoidalMode(True)
+                except Exception:
+                    pass
+                return abs(dah.measureArea(geom))
+            except Exception:
+                try:
+                    return abs(geom.area())
+                except Exception:
+                    return 0.0
 
     def safeUnion(self, geoms):
         """Union geometries safely, filtering invalid geometry first."""
