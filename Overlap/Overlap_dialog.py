@@ -845,17 +845,37 @@ class OverlapDialog(QDialog):
         if len(valid_geoms) == 1:
             return valid_geoms[0]
 
-        # First collect geometries into a single geometry, then attempt unaryUnion.
+        # Try unary union of all geometries first.
+        try:
+            union = QgsGeometry.unaryUnion(valid_geoms)
+            if union is not None and not union.isEmpty():
+                return union
+        except Exception:
+            pass
+
+        # Pairwise fallback union.
+        try:
+            union = valid_geoms[0]
+            for geom in valid_geoms[1:]:
+                try:
+                    candidate = QgsGeometry.unaryUnion([union, geom])
+                    if candidate is not None and not candidate.isEmpty():
+                        union = candidate
+                except Exception:
+                    # Keep current union and continue
+                    pass
+            if union is not None and not union.isEmpty():
+                return union
+        except Exception:
+            pass
+
+        # Last resort: use collected geometry only if union failed entirely.
         try:
             collected = QgsGeometry.collectGeometry(valid_geoms)
             if collected is not None and not collected.isEmpty():
-                try:
-                    union = QgsGeometry.unaryUnion(collected)
-                    if union is not None and not union.isEmpty():
-                        return union
-                except Exception:
-                    # If unaryUnion on the collected geometry fails, return the collected geometry
-                    return collected
+                if self.verboseCheck.isChecked():
+                    print("[Overlap] safeUnion: returning collected geometry as last resort")
+                return collected
         except Exception:
             pass
 
