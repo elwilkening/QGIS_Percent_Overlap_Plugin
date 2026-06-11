@@ -386,6 +386,12 @@ class OverlapDialog(QDialog):
         input_union = self.safeUnion(input_geoms)
         if input_union is None or input_union.isEmpty():
             return results
+        # Debug: report input union bbox
+        try:
+            bbox = input_union.boundingBox()
+            print(f"[Overlap] Input union bbox: {bbox.xMinimum()}, {bbox.yMinimum()} -> {bbox.xMaximum()}, {bbox.yMaximum()}")
+        except Exception:
+            pass
 
         input_area = self.getGeometryArea(input_union, input_layer)
         if input_area <= 0:
@@ -494,11 +500,23 @@ class OverlapDialog(QDialog):
             # Union overlays (so overlapping features count only once)
             overlay_union = self.safeUnion(overlay_geoms)
             if overlay_union is None or overlay_union.isEmpty():
+                print(f"[Overlap] Year {year}: overlay_union is empty or None (count={len(overlay_geoms)})")
                 continue
+
+            # Debug: report overlay union bbox
+            try:
+                ob = overlay_union.boundingBox()
+                print(f"[Overlap] Year {year}: overlay union bbox: {ob.xMinimum()}, {ob.yMinimum()} -> {ob.xMaximum()}, {ob.yMaximum()}")
+            except Exception:
+                pass
 
             # Intersection: how much of input is covered by overlay
             intersection = input_union.intersection(overlay_union)
             overlap_area = 0.0
+            if intersection is None:
+                print(f"[Overlap] Year {year}: intersection returned None")
+            else:
+                print(f"[Overlap] Year {year}: intersection isEmpty={intersection.isEmpty()}")
             if intersection and not intersection.isEmpty():
                 overlap_area = self.getGeometryArea(intersection, input_layer)
 
@@ -579,20 +597,20 @@ class OverlapDialog(QDialog):
         if len(valid_geoms) == 1:
             return valid_geoms[0]
 
+        # First collect geometries into a single geometry, then attempt unaryUnion.
         try:
-            union = QgsGeometry.unaryUnion(valid_geoms)
-            if union is not None and not union.isEmpty():
-                return union
+            collected = QgsGeometry.collectGeometry(valid_geoms)
+            if collected is not None and not collected.isEmpty():
+                try:
+                    union = QgsGeometry.unaryUnion(collected)
+                    if union is not None and not union.isEmpty():
+                        return union
+                except Exception:
+                    # If unaryUnion on the collected geometry fails, return the collected geometry
+                    return collected
         except Exception:
             pass
 
-        # Fallback: return collected geometries if union fails.
-        try:
-            union = QgsGeometry.collectGeometry(valid_geoms)
-            if union is not None and not union.isEmpty():
-                return union
-        except Exception:
-            pass
         return None
 
     def populateResultsTable(self):
