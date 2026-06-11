@@ -13,6 +13,7 @@ from qgis.PyQt.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QCheckBox,
     QFileDialog,
     QTableWidget,
     QTableWidgetItem,
@@ -26,6 +27,9 @@ from qgis.core import (
     QgsVectorLayer,
     QgsDistanceArea,
     QgsUnitTypes,
+    QgsFeature,
+    QgsFields,
+    QgsWkbTypes,
 )
 
 
@@ -97,7 +101,13 @@ class OverlapDialog(QDialog):
         self.refreshButton = QPushButton("Refresh Layers")
         self.refreshButton.clicked.connect(self.refreshLayerList)
         row.addWidget(self.refreshButton)
+        self.repairButton = QPushButton("Repair Selected Overlays")
+        self.repairButton.clicked.connect(self.onRepairSelectedOverlays)
+        row.addWidget(self.repairButton)
 
+        self.verboseCheck = QCheckBox("Verbose logs")
+        self.verboseCheck.setChecked(True)
+        row.addWidget(self.verboseCheck)
         self.calculateButton = QPushButton("Calculate Overlap")
         self.calculateButton.clicked.connect(self.onCalculate)
         row.addWidget(self.calculateButton)
@@ -177,6 +187,89 @@ class OverlapDialog(QDialog):
             if isinstance(layer, QgsVectorLayer):
                 layers.append(layer)
         return layers
+
+    def onRepairSelectedOverlays(self):
+        """Repair selected overlay layers by creating repaired memory layers."""
+        overlays = self.getSelectedOverlayLayers()
+        if not overlays:
+            QMessageBox.information(self, "No selection", "No overlay layers selected to repair.")
+            return
+
+        new_layers = []
+        for layer in overlays:
+            try:
+                new_layer = self.repair_layer(layer)
+                if new_layer:
+                    QgsProject.instance().addMapLayer(new_layer)
+                    new_layers.append(new_layer)
+                    if self.verboseCheck.isChecked():
+                        print(f"[Overlap] Repaired layer added: {new_layer.name()}")
+            except Exception as e:
+                print(f"[Overlap] Repair failed for {layer.name()}: {e}")
+
+        if new_layers:
+            QMessageBox.information(self, "Repair Complete", "Repaired layers added to the project.")
+            self.refreshLayerList()
+
+    def repair_layer(self, layer):
+        """Return a new QgsVectorLayer in memory with repaired geometries copied from layer."""
+        if layer is None:
+            return None
+
+        # Determine geometry type string
+        wkb = layer.wkbType()
+        if QgsWkbTypes.isPointType(wkb):
+            geom_str = "Point"
+        elif QgsWkbTypes.isLineType(wkb):
+            geom_str = "LineString"
+        else:
+            geom_str = "Polygon"
+
+        new_name = f"{layer.name()} - repaired"
+        uri = f"{geom_str}?crs={layer.crs().authid()}"
+        new_layer = QgsVectorLayer(uri, new_name, "memory")
+        prov = new_layer.dataProvider()
+
+        # Copy fields
+        prov.addAttributes(layer.fields())
+        new_layer.updateFields()
+
+        feats = []
+        for feat in layer.getFeatures():
+            try:
+                geom = self.normalizeGeometry(feat.geometry())
+                if geom is None or geom.isEmpty():
+                    continue
+                if not self.geometryIsFinite(geom):
+                    # try repair
+                    try:
+                        geom = geom.makeValid() or geom
+                        if geom is not None and not geom.isEmpty():
+                            geom = geom.buffer(0, 5)
+                    except Exception:
+                        continue
+                    if not self.geometryIsFinite(geom):
+                        continue
+
+                new_feat = QgsFeature()
+                new_feat.setFields(new_layer.fields())
+                new_feat.setGeometry(geom)
+                # copy attributes
+                for i, f in enumerate(layer.fields()):
+                    try:
+                        new_feat.setAttribute(i, feat.attribute(i))
+                    except Exception:
+                        pass
+                feats.append(new_feat)
+            except Exception as e:
+                if self.verboseCheck.isChecked():
+                    print(f"[Overlap] Repair: skipping feature due to error: {e}")
+
+        if feats:
+            prov.addFeatures(feats)
+            new_layer.updateExtents()
+            return new_layer
+        return None
 
     def getCommonFieldNames(self, layers):
         """Get field names common to all layers."""
@@ -390,7 +483,8 @@ class OverlapDialog(QDialog):
         # Debug: report input union bbox
         try:
             bbox = input_union.boundingBox()
-            print(f"[Overlap] Input union bbox: {bbox.xMinimum()}, {bbox.yMinimum()} -> {bbox.xMaximum()}, {bbox.yMaximum()}")
+            if self.verboseCheck.isChecked():
+                print(f"[Overlap] Input union bbox: {bbox.xMinimum()}, {bbox.yMinimum()} -> {bbox.xMaximum()}, {bbox.yMaximum()}")
         except Exception:
             pass
 
@@ -514,13 +608,15 @@ class OverlapDialog(QDialog):
             # Union overlays (so overlapping features count only once)
             overlay_union = self.safeUnion(overlay_geoms)
             if overlay_union is None or overlay_union.isEmpty():
-                print(f"[Overlap] Year {year}: overlay_union is empty or None (count={len(overlay_geoms)})")
+                if self.verboseCheck.isChecked():
+                    print(f"[Overlap] Year {year}: overlay_union is empty or None (count={len(overlay_geoms)})")
                 continue
 
             # Debug: report overlay union bbox
             try:
                 ob = overlay_union.boundingBox()
-                print(f"[Overlap] Year {year}: overlay union bbox: {ob.xMinimum()}, {ob.yMinimum()} -> {ob.xMaximum()}, {ob.yMaximum()}")
+                if self.verboseCheck.isChecked():
+                    print(f"[Overlap] Year {year}: overlay union bbox: {ob.xMinimum()}, {ob.yMinimum()} -> {ob.xMaximum()}, {ob.yMaximum()}")
             except Exception:
                 pass
 
@@ -528,9 +624,11 @@ class OverlapDialog(QDialog):
             intersection = input_union.intersection(overlay_union)
             overlap_area = 0.0
             if intersection is None:
-                print(f"[Overlap] Year {year}: intersection returned None")
+                if self.verboseCheck.isChecked():
+                    print(f"[Overlap] Year {year}: intersection returned None")
             else:
-                print(f"[Overlap] Year {year}: intersection isEmpty={intersection.isEmpty()}")
+                if self.verboseCheck.isChecked():
+                    print(f"[Overlap] Year {year}: intersection isEmpty={intersection.isEmpty()}")
 
             if intersection and not intersection.isEmpty():
                 overlap_area = self.getGeometryArea(intersection, input_layer)
@@ -546,13 +644,17 @@ class OverlapDialog(QDialog):
                         if inter2 is not None and not inter2.isEmpty():
                             dest_crs = __import__('qgis').core.QgsCoordinateReferenceSystem(f"EPSG:{proj_epsg}")
                             overlap_area = self.measureAreaWithCrs(inter2, dest_crs)
-                            print(f"[Overlap] Year {year}: fallback projected intersection area={overlap_area}")
+                            if self.verboseCheck.isChecked():
+                                print(f"[Overlap] Year {year}: fallback projected intersection area={overlap_area}")
                         else:
-                            print(f"[Overlap] Year {year}: fallback projected intersection empty")
+                            if self.verboseCheck.isChecked():
+                                print(f"[Overlap] Year {year}: fallback projected intersection empty")
                     else:
-                        print(f"[Overlap] Year {year}: could not reproject geometries for fallback")
+                        if self.verboseCheck.isChecked():
+                            print(f"[Overlap] Year {year}: could not reproject geometries for fallback")
                 except Exception as e:
-                    print(f"[Overlap] Year {year}: fallback projection/intersection failed: {e}")
+                    if self.verboseCheck.isChecked():
+                        print(f"[Overlap] Year {year}: fallback projection/intersection failed: {e}")
 
                 # Additional per-feature diagnostics when union intersection fails
                 try:
@@ -569,7 +671,8 @@ class OverlapDialog(QDialog):
                                     area_f = self.getGeometryArea(inter_f, input_layer)
                                 else:
                                     area_f = 0.0
-                                print(f"[Overlap] Year {year}: feature {idx} intersects true, area={area_f}")
+                                if self.verboseCheck.isChecked():
+                                    print(f"[Overlap] Year {year}: feature {idx} intersects true, area={area_f}")
                                 # continue scanning to accumulate intersections
                             else:
                                 if idx < 5:
@@ -579,7 +682,8 @@ class OverlapDialog(QDialog):
                                         bbox_f = (b.xMinimum(), b.yMinimum(), b.xMaximum(), b.yMaximum())
                                     except Exception:
                                         pass
-                                    print(f"[Overlap] Year {year}: feature {idx} intersects false, bbox={bbox_f}")
+                                    if self.verboseCheck.isChecked():
+                                        print(f"[Overlap] Year {year}: feature {idx} intersects false, bbox={bbox_f}")
                         except Exception as e:
                             print(f"[Overlap] Year {year}: feature {idx} test failed: {e}")
                     # If we collected per-feature intersections, union them and measure
@@ -588,11 +692,14 @@ class OverlapDialog(QDialog):
                             inter_union = self.safeUnion(per_feature_inters)
                             if inter_union is not None and not inter_union.isEmpty():
                                 overlap_area = self.getGeometryArea(inter_union, input_layer)
-                                print(f"[Overlap] Year {year}: per-feature intersection union area={overlap_area}")
+                                if self.verboseCheck.isChecked():
+                                    print(f"[Overlap] Year {year}: per-feature intersection union area={overlap_area}")
                             else:
-                                print(f"[Overlap] Year {year}: per-feature intersection union empty")
+                                if self.verboseCheck.isChecked():
+                                    print(f"[Overlap] Year {year}: per-feature intersection union empty")
                         except Exception as e:
-                            print(f"[Overlap] Year {year}: per-feature union failed: {e}")
+                            if self.verboseCheck.isChecked():
+                                print(f"[Overlap] Year {year}: per-feature union failed: {e}")
                 except Exception:
                     pass
 
@@ -727,7 +834,8 @@ class OverlapDialog(QDialog):
                 except Exception:
                     pass
 
-                print("[Overlap] Skipping geometry with non-finite coordinates")
+                if self.verboseCheck.isChecked():
+                    print("[Overlap] Skipping geometry with non-finite coordinates")
                 continue
 
             valid_geoms.append(geom)
